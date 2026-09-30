@@ -13,9 +13,10 @@ on:
       BASE_PROJECT:
         description: 'Choose a base project:'
         required: true
-        default: 'LineageOS 23.2'
+        default: 'auto'
         type: choice
         options:
+          - 'auto'
           - 'LineageOS 20.0'
           - 'LineageOS 22.1'
           - 'LineageOS 23.2'
@@ -67,8 +68,7 @@ on:
         - 'no'
 
 env:
-  ROM_NAME: "Lunaris-AOSP"     # only used in Telegram messages
-  PRODUCT_PREFIX: "lunaris"    # product = lunaris_<codename>
+  PRODUCT_PREFIX: "lunaris"    # product = lunaris_<codename> (change if you build another ROM)
   # EDIT: Telegram bot token from BotFather. Repo secrets TELEGRAM_TOKEN / TELEGRAM_TO win if set.
   # WARNING: this repo is public, so anyone can read a token pasted here. Prefer the secrets.
   TG_BOT_TOKEN: "PASTE_BOT_TOKEN_HERE"
@@ -152,8 +152,39 @@ jobs:
 
     - name: Set Project variables
       id: proj-variables
+      env:
+        INIT_CMD: ${{ github.event.inputs.BUILD_DIFFERENT_ROM }}
+        IN_BASE: ${{ github.event.inputs.BASE_PROJECT }}
       run: |
-        case "${{ github.event.inputs.BASE_PROJECT }}" in
+        # ---- Detect the ROM name (and the Crave base project) from the repo init command ----
+        ROM_URL=$(echo "$INIT_CMD" | sed -n 's/.*[[:space:]]-u[ =]*\([^ ]*\).*/\1/p')
+        ROM_BRANCH=$(echo "$INIT_CMD" | sed -n 's/.*[[:space:]]-b[ =]*\([^ ]*\).*/\1/p')
+        ROM_OWNER=$(echo "$ROM_URL" | sed -E 's#^(https?://|git@|ssh://git@)[^/:]+[/:]##' | cut -d/ -f1)
+        case "${ROM_OWNER,,}" in
+          "" | accupara) ROM="" ;;
+          lineageos) ROM="LineageOS" ;;
+          crdroidandroid) ROM="crDroid" ;;
+          derpfest-aosp) ROM="DerpFest" ;;
+          pixelos-aosp) ROM="PixelOS" ;;
+          *) ROM="$ROM_OWNER" ;;
+        esac
+
+        BASE="$IN_BASE"
+        if [[ "$BASE" == "auto" ]]; then
+          case "${ROM_BRANCH,,}" in
+            16*|sixteen*|*-16*|lineage-23*) BASE="LineageOS 23.2" ;;
+            15*|fifteen*|*-15*|lineage-22*) BASE="LineageOS 22.1" ;;
+            14*|fourteen*|*-14*|lineage-21*) BASE="LineageOS 21.0" ;;
+            *)
+              echo "Could not detect the base project from branch '$ROM_BRANCH'. Pick BASE_PROJECT manually."
+              exit 1
+              ;;
+          esac
+        fi
+        if [[ -z "$ROM" ]]; then ROM="$BASE"; fi
+        echo "Detected ROM: $ROM (url: $ROM_URL, branch: $ROM_BRANCH) | Base project: $BASE"
+
+        case "$BASE" in
         "DerpFest 14.0")
           export PROJECTFOLDER="/crave-devspaces/DerpFest14"
           export PROJECTID="64"
@@ -207,7 +238,7 @@ jobs:
 
         if [[ "$PRODUCT" == *_* ]] && [[ "$PRODUCT" != gsi_* ]] && [[ "$PRODUCT" != sdk_* ]] && [[ "$PRODUCT" != *_sprout ]] && [[ "$PRODUCT" != Mi439_* ]] && [[ "$PRODUCT" != Mi8937_* ]]; then
           LUNCH="lunch $PRODUCT-${{ github.event.inputs.BUILD_TYPE }}"
-        elif [[ "${{ github.event.inputs.BASE_PROJECT }}" == "RisingOS 15 Revived" ]] && [[ "${{ github.event.inputs.BUILD_DIFFERENT_ROM }}" == "echo 'Build Starting!'" ]]; then
+        elif [[ "$BASE" == "RisingOS 15 Revived" ]] && [[ "${{ github.event.inputs.BUILD_DIFFERENT_ROM }}" == "echo 'Build Starting!'" ]]; then
             LUNCH="riseup $PRODUCT ${{ github.event.inputs.BUILD_TYPE }}"
         else
             LUNCH="breakfast $PRODUCT ${{ github.event.inputs.BUILD_TYPE }}"
@@ -221,7 +252,9 @@ jobs:
             export LOCAL_MANIFEST="git clone ${{ github.event.inputs.LOCAL_MANIFEST }} --depth 1 -b ${{github.event.inputs.LOCAL_MANIFEST_BRANCH}} .repo/local_manifests"
           fi
 
-        echo "Building on ${{ github.event.inputs.BASE_PROJECT }} project"
+        echo "Building on $BASE project"
+        echo "BASE_RESOLVED=$BASE" >> "$GITHUB_OUTPUT"
+        echo "ROM_DETECTED=$ROM" >> "$GITHUB_OUTPUT"
         echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_OUTPUT"
         echo "PROJECTID=$PROJECTID"  >> "$GITHUB_OUTPUT"
         echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_OUTPUT"
@@ -233,7 +266,8 @@ jobs:
     - name: Display Run Parameters # Credit to azwhikaru for this part
       run: |
         echo "::group::User Environment Variables"
-        echo "Base Project: ${{ github.event.inputs.BASE_PROJECT }}"
+        echo "Base Project: ${{ steps.proj-variables.outputs.BASE_RESOLVED }} (input: ${{ github.event.inputs.BASE_PROJECT }})"
+        echo "Detected ROM: ${{ steps.proj-variables.outputs.ROM_DETECTED }}"
         echo "Extra Repo Init: ${{ github.event.inputs.BUILD_DIFFERENT_ROM }}"
         echo "Removals: ${{ github.event.inputs.REMOVALS }}"
         echo "Local Manifest: ${{ github.event.inputs.LOCAL_MANIFEST }}"
@@ -257,6 +291,8 @@ jobs:
       REPO_INIT: ${{ steps.proj-variables.outputs.REPO_INIT }}
       LUNCH: ${{ steps.proj-variables.outputs.LUNCH }}
       LOCAL_MANIFEST: ${{ steps.proj-variables.outputs.LOCAL_MANIFEST }}
+      BASE_RESOLVED: ${{ steps.proj-variables.outputs.BASE_RESOLVED }}
+      ROM_DETECTED: ${{ steps.proj-variables.outputs.ROM_DETECTED }}
 
   test:
     name: Test Local Manifests
@@ -329,6 +365,8 @@ jobs:
       REPO_INIT: ${{ needs.prepare.outputs.REPO_INIT }}
       LUNCH: ${{ needs.prepare.outputs.LUNCH }}
       LOCAL_MANIFEST: "${{ needs.prepare.outputs.LOCAL_MANIFEST }}"
+      BASE_RESOLVED: ${{ needs.prepare.outputs.BASE_RESOLVED }}
+      ROM_DETECTED: ${{ needs.prepare.outputs.ROM_DETECTED }}
 
   build:
     timeout-minutes: 1440
@@ -338,6 +376,9 @@ jobs:
     concurrency:
       group: ${{ github.repository_owner }}
     steps:
+    - name: Record build start time
+      run: echo "BUILD_START=$(date +%s)" >> "$GITHUB_ENV"
+
       # Accept Project Variables
     - name: Set Repo Project
       run: |
@@ -347,6 +388,8 @@ jobs:
         LUNCH="${{ needs.test.outputs.LUNCH }}"
         LOCAL_MANIFEST="${{ needs.test.outputs.LOCAL_MANIFEST }}"
 
+        echo "ROM_DISPLAY=${{ needs.test.outputs.ROM_DETECTED }}" >> "$GITHUB_ENV"
+        echo "BASE_RESOLVED=${{ needs.test.outputs.BASE_RESOLVED }}" >> "$GITHUB_ENV"
         echo "PROJECTFOLDER=$PROJECTFOLDER" >> "$GITHUB_ENV"
         echo "PROJECTID=$PROJECTID"  >> "$GITHUB_ENV"
         echo "REPO_INIT=$REPO_INIT" >> "$GITHUB_ENV"
@@ -366,7 +409,7 @@ jobs:
           -d parse_mode="Markdown"
         }
         
-        send_telegram_message "Crave Project: ${{ github.event.inputs.BASE_PROJECT }}%0ACrave ProjectID: $PROJECTID %0ABuild for ${{ github.event.inputs.DEVICE_NAME }} has been queued %0ACheck Progress at: %0Ahttps://github.com/$(echo "${{ github.repository }}" | sed 's@_@\\_@g')/actions/runs/${{ github.run_id }}"
+        send_telegram_message "ROM: $ROM_DISPLAY%0ACrave base: $BASE_RESOLVED (ID $PROJECTID) %0ABuild for ${{ github.event.inputs.DEVICE_NAME }} has been queued %0ACheck Progress at: %0Ahttps://github.com/$(echo "${{ github.repository }}" | sed 's@_@\\_@g')/actions/runs/${{ github.run_id }}"
       env:
         chatId: ${{ secrets.TELEGRAM_TO || env.TG_CHAT_ID }}
         botToken: ${{ secrets.TELEGRAM_TOKEN || env.TG_BOT_TOKEN }}
@@ -447,7 +490,7 @@ jobs:
       run: |
         git config --global user.name "${{ github.actor }}"
         git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-      
+
       # Download and configure 'crave'.
     - name: Configure the 'crave' environment
       run: |
@@ -495,9 +538,6 @@ jobs:
         fi
         echo "BUILD_DIFFERENT_ROM=$BUILD_DIFFERENT_ROM" >> "$GITHUB_ENV"
         echo "We will be building with $LUNCH"
-
-    - name: Record build start time
-      run: echo "BUILD_START=$(date +%s)" >> "$GITHUB_ENV"
 
 
       # Create a 'crave' job for building.
@@ -601,7 +641,7 @@ jobs:
         ACTOR: ${{ github.actor }}
         DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
         BUILD_TYPE: ${{ github.event.inputs.BUILD_TYPE }}
-        BASE_PROJECT: ${{ github.event.inputs.BASE_PROJECT }}
+        BASE_PROJECT: ${{ needs.test.outputs.BASE_RESOLVED }}
       run: |
         NL=$'\n'
         NOW=$(date +%s)
@@ -610,7 +650,7 @@ jobs:
         DURATION="$((DUR/3600))h $(((DUR%3600)/60))m $((DUR%60))s"
         STARTED=$(TZ='Asia/Kolkata' date -d "@$START" '+%Y-%m-%d %I:%M:%S %p UTC+05:30')
 
-        TEXT="✅ <b>Build Completed for ${ROM_NAME} on ${DEVICE_NAME}</b>${NL}"
+        TEXT="✅ <b>Build Completed for ${ROM_DISPLAY} on ${DEVICE_NAME}</b>${NL}"
         TEXT+="<b>User:</b> <code>${ACTOR}</code>${NL}"
         TEXT+="<b>Started:</b> ${STARTED}${NL}"
         TEXT+="<b>Duration:</b> <code>${DURATION}</code>${NL}"
@@ -656,9 +696,9 @@ jobs:
         STARTED=$(TZ='Asia/Kolkata' date -d "@$START" '+%Y-%m-%d %I:%M:%S %p UTC+05:30')
 
         if [ "$JOB_STATUS" = "cancelled" ]; then
-          HEAD="🛑 <b>Build Cancelled for ${ROM_NAME} on ${DEVICE_NAME}</b>"
+          HEAD="🛑 <b>Build Cancelled for ${ROM_DISPLAY} on ${DEVICE_NAME}</b>"
         else
-          HEAD="❌ <b>Build Failed for ${ROM_NAME} on ${DEVICE_NAME}</b>"
+          HEAD="❌ <b>Build Failed for ${ROM_DISPLAY} on ${DEVICE_NAME}</b>"
           rm -f out/error.log
           crave ssh -- sleep 1 || true
           crave pull out/error.log || true
