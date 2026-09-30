@@ -13,7 +13,7 @@ on:
       BASE_PROJECT:
         description: 'Choose a base project:'
         required: true
-        default: 'LineageOS 21.0'
+        default: 'LineageOS 23.2'
         type: choice
         options:
           - 'LineageOS 20.0'
@@ -28,26 +28,22 @@ on:
       BUILD_DIFFERENT_ROM:
         description: "Command to initialize a different 'repo' project:"
         required: false
-        default: "echo 'Build Starting!'"
+        default: "repo init -u https://github.com/Lunaris-AOSP/android -b 16.2 --git-lfs --depth=1"
       REMOVALS:
         description: "Folders to be removed before syncing:"
         required: false
       LOCAL_MANIFEST:
         description: "Personal local manifest [repository or raw]:"
         required: true
-        default: 'https://github.com/sounddrill31/local_manifests_oxygen'
+        default: 'https://github.com/USERNAME/local_manifests'  # EDIT: your local manifest repo
       LOCAL_MANIFEST_BRANCH:
         description: "Personal local manifest's branch:"
         required: false
-        default: 'lineage-21-qpr3'
+        default: 'main'  # EDIT: your local manifest branch
       DEVICE_NAME:
         description: "Device's codename:"
         required: true
-        default: "oxygen"
-      PRODUCT_NAME:
-        description: "Product to build:"
-        required: true
-        default: "oxygen"
+        default: "CODENAME"  # EDIT: your device codename
       BUILD_COMMAND:
         description: 'Command to be used for compiling:'
         required: true
@@ -69,6 +65,15 @@ on:
         options: 
         - 'yes'
         - 'no'
+
+env:
+  ROM_NAME: "Lunaris-AOSP"     # only used in Telegram messages
+  PRODUCT_PREFIX: "lunaris"    # product = lunaris_<codename>
+  # EDIT: Telegram bot token from BotFather. Repo secrets TELEGRAM_TOKEN / TELEGRAM_TO win if set.
+  # WARNING: this repo is public, so anyone can read a token pasted here. Prefer the secrets.
+  TG_BOT_TOKEN: "PASTE_BOT_TOKEN_HERE"
+  # EDIT: your Telegram chat id (start the bot first)
+  TG_CHAT_ID: "PASTE_CHAT_ID_HERE"
 
 jobs:
   Start-Runner:
@@ -135,6 +140,16 @@ jobs:
         fi
         bash scripts/env-checker.sh
 
+    - name: Check config placeholders
+      env:
+        IN_DEVICE: ${{ github.event.inputs.DEVICE_NAME }}
+        IN_MANIFEST: ${{ github.event.inputs.LOCAL_MANIFEST }}
+      run: |
+        if [[ "$IN_DEVICE" == *CODENAME* || "$IN_MANIFEST" == *USERNAME* ]]; then
+          echo "Config not filled! Set DEVICE_NAME and LOCAL_MANIFEST (edit the defaults in the yml or type them when running)."
+          exit 1
+        fi
+
     - name: Set Project variables
       id: proj-variables
       run: |
@@ -186,12 +201,16 @@ jobs:
         ;;
         esac
 
-        if [[ ${{ github.event.inputs.PRODUCT_NAME }} == *_* ]] && [[ ${{ github.event.inputs.PRODUCT_NAME }} != gsi_* ]] && [[ ${{ github.event.inputs.PRODUCT_NAME }} != sdk_* ]] && [[ ${{ github.event.inputs.PRODUCT_NAME }} != *_sprout ]] && [[ ${{ github.event.inputs.PRODUCT_NAME }} != Mi439_* ]] && [[ ${{ github.event.inputs.PRODUCT_NAME }} != Mi8937_* ]]; then
-          LUNCH="lunch ${{ github.event.inputs.PRODUCT_NAME }}-${{ github.event.inputs.BUILD_TYPE }}"
+        # Product is always <PRODUCT_PREFIX>_<device codename>, e.g. lunaris_xyz
+        PRODUCT="${{ env.PRODUCT_PREFIX }}_${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Product: $PRODUCT"
+
+        if [[ "$PRODUCT" == *_* ]] && [[ "$PRODUCT" != gsi_* ]] && [[ "$PRODUCT" != sdk_* ]] && [[ "$PRODUCT" != *_sprout ]] && [[ "$PRODUCT" != Mi439_* ]] && [[ "$PRODUCT" != Mi8937_* ]]; then
+          LUNCH="lunch $PRODUCT-${{ github.event.inputs.BUILD_TYPE }}"
         elif [[ "${{ github.event.inputs.BASE_PROJECT }}" == "RisingOS 15 Revived" ]] && [[ "${{ github.event.inputs.BUILD_DIFFERENT_ROM }}" == "echo 'Build Starting!'" ]]; then
-            LUNCH="riseup ${{ github.event.inputs.PRODUCT_NAME }} ${{ github.event.inputs.BUILD_TYPE }}"
+            LUNCH="riseup $PRODUCT ${{ github.event.inputs.BUILD_TYPE }}"
         else
-            LUNCH="breakfast ${{ github.event.inputs.PRODUCT_NAME }} ${{ github.event.inputs.BUILD_TYPE }}"
+            LUNCH="breakfast $PRODUCT ${{ github.event.inputs.BUILD_TYPE }}"
         fi
 
           if [[ "${{ github.event.inputs.LOCAL_MANIFEST }}" =~ \.xml(/)?$ ]]; then
@@ -349,8 +368,8 @@ jobs:
         
         send_telegram_message "Crave Project: ${{ github.event.inputs.BASE_PROJECT }}%0ACrave ProjectID: $PROJECTID %0ABuild for ${{ github.event.inputs.DEVICE_NAME }} has been queued %0ACheck Progress at: %0Ahttps://github.com/$(echo "${{ github.repository }}" | sed 's@_@\\_@g')/actions/runs/${{ github.run_id }}"
       env:
-        chatId: ${{ secrets.TELEGRAM_TO }}
-        botToken: ${{ secrets.TELEGRAM_TOKEN }}
+        chatId: ${{ secrets.TELEGRAM_TO || env.TG_CHAT_ID }}
+        botToken: ${{ secrets.TELEGRAM_TOKEN || env.TG_BOT_TOKEN }}
         jobStatus: "Build Started"
         skipSuccess: false
 
@@ -477,6 +496,10 @@ jobs:
         echo "BUILD_DIFFERENT_ROM=$BUILD_DIFFERENT_ROM" >> "$GITHUB_ENV"
         echo "We will be building with $LUNCH"
 
+    - name: Record build start time
+      run: echo "BUILD_START=$(date +%s)" >> "$GITHUB_ENV"
+
+
       # Create a 'crave' job for building.
     - name: Start compilation through 'crave'
       if: ${{ github.event.inputs.BUILD_DIFFERENT_ROM != 'skip' }}
@@ -524,88 +547,145 @@ jobs:
         ${{ github.event.inputs.BUILD_COMMAND }}"
       timeout-minutes: 1440
 
-      # Send Build 'status' notification (Success)
-    - name: Telegram Notification
-      if:  ${{ success() }}
-      continue-on-error: true
-      run: |
-        send_telegram_message() {
-          local message="$1"
-          curl -s -X POST \
-          https://api.telegram.org/bot$botToken/sendMessage \
-          -d chat_id=$chatId \
-          -d text="$message" \
-          -d parse_mode="Markdown"
-        }
-
-        send_telegram_message "Crave Project: ${{ github.event.inputs.BASE_PROJECT }}%0ACrave ProjectID: $PROJECTID %0ABuild for ${{ github.event.inputs.DEVICE_NAME }} has Succeeded! %0ACheck Progress at: %0Ahttps://github.com/$(echo "${{ github.repository }}" | sed 's@_@\\_@g')/actions/runs/${{ github.run_id }}%0ADownload at: https://github.com/$(echo "${{ github.repository }}" | sed 's@_@\\_@g')/releases/tag/${{ github.run_id }}"
-
-      env:
-        chatId: ${{ secrets.TELEGRAM_TO }}
-        botToken: ${{ secrets.TELEGRAM_TOKEN }}
-        jobStatus: ${{ job.status }}
-        skipSuccess: false
-
-      # Send Build 'status' notification (Fail/Cancel)
-    - name: Telegram Notification
-      if:  ${{ cancelled() || failure() }}
-      continue-on-error: true
-      run: |
-        send_telegram_message() {
-          local message="$1"
-          curl -s -X POST \
-          https://api.telegram.org/bot$botToken/sendMessage \
-          -d chat_id=$chatId \
-          -d text="$message" \
-          -d parse_mode="Markdown"
-        }
-
-        if [ "$jobStatus" = "cancelled" ]; then
-          jobMessage="has been Cancelled!"
-        elif [ "$jobStatus" = "failure" ]; then
-          jobMessage="has Failed!"
-        fi
-
-        send_telegram_message "Crave Project: ${{ github.event.inputs.BASE_PROJECT }}%0ACrave ProjectID: $PROJECTID %0ABuild for ${{ github.event.inputs.DEVICE_NAME }} $jobMessage %0ACheck Progress at: %0Ahttps://github.com/$(echo "${{ github.repository }}" | sed 's@_@\\_@g')/actions/runs/${{ github.run_id }}"
-        # Todo: error.log link
-      env:
-        chatId: ${{ secrets.TELEGRAM_TO }}
-        botToken: ${{ secrets.TELEGRAM_TOKEN }}
-        jobStatus: ${{ job.status }}
-
-      # Only reach this wheter the user killed the workflow.
+      # Only reach this whether the user killed the workflow.
     - name: Execute if the job is cancelled
       if: ${{ cancelled() }}
       run: |
         cd $PROJECTFOLDER
         crave stop --all
 
-      # Upload '.zip's and '.img's directly from 'crave' ssh.
-    - name: Upload build artifact(s)
+      # Upload the ROM zip to Gofile straight from the crave server.
+    - name: Upload ROM to Gofile
+      if: ${{ success() }}
       continue-on-error: true
+      env:
+        GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
+        DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
       run: |
         cd $PROJECTFOLDER
-        echo "${{ secrets.GITHUB_TOKEN }}" > token.txt
-        crave push token.txt -d $(crave ssh -- pwd | grep -v Select | sed -s 's/\r//g')/
-        crave ssh -- "export GH_UPLOAD_LIMIT="${{ secrets.GH_UPLOAD_LIMIT }}"; bash /opt/crave/github-actions/upload.sh '${{ github.run_id }}' '${{ github.event.inputs.DEVICE_NAME }}'  '${{ github.repository }}' '${{ github.event.inputs.PRODUCT_NAME }}-${{ github.run_id }}' '${{ secrets.EXTRA_FILES }}'"
+        cat > gofile_upload.sh <<'EOF'
+        #!/bin/bash
+        DEVICE="$1"
+        cd "out/target/product/${DEVICE}" || { echo "GOFILE_ERROR|output folder not found"; exit 1; }
+        ZIP=$(ls -t Lunaris*.zip *.zip 2>/dev/null | grep -v -e '-ota-' -e 'target_files' | head -n 1)
+        [ -z "$ZIP" ] && { echo "GOFILE_ERROR|no zip found"; exit 1; }
+        SIZE=$(du -h "$ZIP" | cut -f1)
+        AUTH=()
+        [ -n "$GOFILE_TOKEN" ] && AUTH=(-H "Authorization: Bearer $GOFILE_TOKEN")
+        RES=$(curl -s --retry 3 -X POST "${AUTH[@]}" -F "file=@${ZIP}" https://upload.gofile.io/uploadfile)
+        LINK=$(echo "$RES" | grep -o '"downloadPage" *: *"[^"]*"' | sed 's/.*: *"//; s/"$//')
+        [ -z "$LINK" ] && { echo "GOFILE_ERROR|$RES"; exit 1; }
+        echo "GOFILE_RESULT|${LINK}|${ZIP}|${SIZE}"
+        EOF
+        REMOTE_DIR=$(crave ssh -- pwd | grep -v Select | sed -s 's/\r//g')
+        crave push gofile_upload.sh -d "${REMOTE_DIR}/"
+        crave ssh -- "export GOFILE_TOKEN='${GOFILE_TOKEN}'; bash gofile_upload.sh '${DEVICE_NAME}'" | tee gofile.log
+        LINE=$(grep -a '^GOFILE_RESULT|' gofile.log | tail -n 1 | tr -d '\r')
+        if [ -z "$LINE" ]; then
+          echo "Gofile upload failed:"
+          grep -a 'GOFILE_ERROR' gofile.log || true
+          exit 1
+        fi
+        IFS='|' read -r _ LINK ZIP SIZE <<< "$LINE"
+        echo "GOFILE_LINK=${LINK}" >> "$GITHUB_ENV"
+        echo "ROM_FILE=${ZIP}" >> "$GITHUB_ENV"
+        echo "ROM_SIZE=${SIZE}" >> "$GITHUB_ENV"
 
-      # Pull Errors and Display them
-    - name: Display error.log
-      if: ${{ failure() }}
-      id: errorlog
-      run: |
-        cd $PROJECTFOLDER
-        crave ssh -- sleep 1
-        crave pull out/error.log
-        echo "Displaying out/error.log"
-        cat out/error.log
-
-      # Upload to Telegram
-    - name: Upload Using telegram-upload
-      run: |
-        cd $PROJECTFOLDER
-        crave ssh -- "export TG_UPLOAD_LIMIT="${{ secrets.TG_UPLOAD_LIMIT }}"; bash /opt/crave/telegram/upload.sh '${{ github.event.inputs.DEVICE_NAME }}' '${{ secrets.EXTRA_FILES }}'"
+      # Success message on Telegram, with a Download button (Gofile link).
+    - name: Telegram - Build success
+      if: ${{ success() }}
       continue-on-error: true
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || env.TG_BOT_TOKEN }}
+        TELEGRAM_TO: ${{ secrets.TELEGRAM_TO || env.TG_CHAT_ID }}
+        ACTOR: ${{ github.actor }}
+        DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+        BUILD_TYPE: ${{ github.event.inputs.BUILD_TYPE }}
+        BASE_PROJECT: ${{ github.event.inputs.BASE_PROJECT }}
+      run: |
+        NL=$'\n'
+        NOW=$(date +%s)
+        START=${BUILD_START:-$NOW}
+        DUR=$((NOW - START))
+        DURATION="$((DUR/3600))h $(((DUR%3600)/60))m $((DUR%60))s"
+        STARTED=$(TZ='Asia/Kolkata' date -d "@$START" '+%Y-%m-%d %I:%M:%S %p UTC+05:30')
+
+        TEXT="✅ <b>Build Completed for ${ROM_NAME} on ${DEVICE_NAME}</b>${NL}"
+        TEXT+="<b>User:</b> <code>${ACTOR}</code>${NL}"
+        TEXT+="<b>Started:</b> ${STARTED}${NL}"
+        TEXT+="<b>Duration:</b> <code>${DURATION}</code>${NL}"
+        TEXT+="🔧 <b>Configuration:</b>${NL}"
+        TEXT+="  • Variant: <code>${BUILD_TYPE}</code>${NL}"
+        TEXT+="  • Base: <code>${BASE_PROJECT}</code>${NL}${NL}"
+
+        if [ -n "${GOFILE_LINK}" ]; then
+          TEXT+="🎉 <b>Build Artifact Uploaded:</b>${NL}"
+          TEXT+="File: <code>${ROM_FILE}</code>${NL}"
+          TEXT+="Size: ${ROM_SIZE}"
+          MARKUP=$(printf '{"inline_keyboard":[[{"text":"📥 Download","url":"%s"}]]}' "${GOFILE_LINK}")
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_TO}" -d parse_mode=HTML -d disable_web_page_preview=true \
+            --data-urlencode "text=${TEXT}" \
+            --data-urlencode "reply_markup=${MARKUP}"
+        else
+          TEXT+="⚠️ Build finished, but the Gofile upload failed. Check the Actions log."
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_TO}" -d parse_mode=HTML -d disable_web_page_preview=true \
+            --data-urlencode "text=${TEXT}"
+        fi
+
+      # Failure / cancel message on Telegram, with error.log attached.
+    - name: Telegram - Build failed or cancelled
+      if: ${{ failure() || cancelled() }}
+      continue-on-error: true
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || env.TG_BOT_TOKEN }}
+        TELEGRAM_TO: ${{ secrets.TELEGRAM_TO || env.TG_CHAT_ID }}
+        ACTOR: ${{ github.actor }}
+        DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+        BUILD_TYPE: ${{ github.event.inputs.BUILD_TYPE }}
+        JOB_STATUS: ${{ job.status }}
+        RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        cd $PROJECTFOLDER
+        NL=$'\n'
+        NOW=$(date +%s)
+        START=${BUILD_START:-$NOW}
+        DUR=$((NOW - START))
+        DURATION="$((DUR/3600))h $(((DUR%3600)/60))m $((DUR%60))s"
+        STARTED=$(TZ='Asia/Kolkata' date -d "@$START" '+%Y-%m-%d %I:%M:%S %p UTC+05:30')
+
+        if [ "$JOB_STATUS" = "cancelled" ]; then
+          HEAD="🛑 <b>Build Cancelled for ${ROM_NAME} on ${DEVICE_NAME}</b>"
+        else
+          HEAD="❌ <b>Build Failed for ${ROM_NAME} on ${DEVICE_NAME}</b>"
+          rm -f out/error.log
+          crave ssh -- sleep 1 || true
+          crave pull out/error.log || true
+        fi
+
+        TEXT="${HEAD}${NL}"
+        TEXT+="<b>User:</b> <code>${ACTOR}</code>${NL}"
+        TEXT+="<b>Started:</b> ${STARTED}${NL}"
+        TEXT+="<b>Duration:</b> <code>${DURATION}</code>${NL}"
+        TEXT+="🔧 Variant: <code>${BUILD_TYPE}</code>${NL}"
+        TEXT+="<a href=\"${RUN_URL}\">Open Actions log</a>"
+
+        if [ -s out/error.log ]; then
+          FILE=out/error.log
+          if [ "$(stat -c%s out/error.log)" -gt 45000000 ]; then
+            tail -n 5000 out/error.log > out/error_tail.log
+            FILE=out/error_tail.log
+          fi
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument" \
+            --form-string chat_id="${TELEGRAM_TO}" --form-string parse_mode=HTML \
+            --form-string caption="${TEXT}" -F document=@"${FILE}"
+        else
+          TEXT+="${NL}${NL}No out/error.log found (the failure happened before compilation, e.g. during sync). Check the Actions log."
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_TO}" -d parse_mode=HTML -d disable_web_page_preview=true \
+            --data-urlencode "text=${TEXT}"
+        fi
 
       # Remove 'crave' clone
     - name: Destroy Crave Clone
@@ -616,3 +696,4 @@ jobs:
         else          
           echo "Skipping removal"
         fi
+        
