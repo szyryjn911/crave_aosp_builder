@@ -49,15 +49,10 @@ on:
         description: 'Command to be used for compiling:'
         required: true
         default: 'mka bacon'
-      BUILD_TYPE:
-        description: 'Type of build:'
+      LUNCH_COMMAND:
+        description: 'Full lunch command (e.g. lunch lineage_RMX2020-bp4a-user):'
         required: true
-        default: 'userdebug'
-        type: choice
-        options: 
-        - 'eng'
-        - 'userdebug'
-        - 'user' 
+        default: 'lunch lineage_RMX2020-bp4a-user'  # EDIT: your full lunch command
       CLEAN_BUILD:
         description: 'Build with a clean workspace?'
         required: true
@@ -68,7 +63,6 @@ on:
         - 'no'
 
 env:
-  PRODUCT_PREFIX: "lunaris"    # product = lunaris_<codename> (change if you build another ROM)
   # EDIT: Telegram bot token from BotFather. Repo secrets TELEGRAM_TOKEN / TELEGRAM_TO win if set.
   # WARNING: this repo is public, so anyone can read a token pasted here. Prefer the secrets.
   TG_BOT_TOKEN: "PASTE_BOT_TOKEN_HERE"
@@ -155,6 +149,7 @@ jobs:
       env:
         INIT_CMD: ${{ github.event.inputs.BUILD_DIFFERENT_ROM }}
         IN_BASE: ${{ github.event.inputs.BASE_PROJECT }}
+        IN_LUNCH: ${{ github.event.inputs.LUNCH_COMMAND }}
       run: |
         # ---- Detect the ROM name (and the Crave base project) from the repo init command ----
         ROM_URL=$(echo "$INIT_CMD" | sed -n 's/.*[[:space:]]-u[ =]*\([^ ]*\).*/\1/p')
@@ -232,17 +227,13 @@ jobs:
         ;;
         esac
 
-        # Product is always <PRODUCT_PREFIX>_<device codename>, e.g. lunaris_xyz
-        PRODUCT="${{ env.PRODUCT_PREFIX }}_${{ github.event.inputs.DEVICE_NAME }}"
-        echo "Product: $PRODUCT"
-
-        if [[ "$PRODUCT" == *_* ]] && [[ "$PRODUCT" != gsi_* ]] && [[ "$PRODUCT" != sdk_* ]] && [[ "$PRODUCT" != *_sprout ]] && [[ "$PRODUCT" != Mi439_* ]] && [[ "$PRODUCT" != Mi8937_* ]]; then
-          LUNCH="lunch $PRODUCT-${{ github.event.inputs.BUILD_TYPE }}"
-        elif [[ "$BASE" == "RisingOS 15 Revived" ]] && [[ "${{ github.event.inputs.BUILD_DIFFERENT_ROM }}" == "echo 'Build Starting!'" ]]; then
-            LUNCH="riseup $PRODUCT ${{ github.event.inputs.BUILD_TYPE }}"
-        else
-            LUNCH="breakfast $PRODUCT ${{ github.event.inputs.BUILD_TYPE }}"
+        # Lunch command is taken exactly as typed by the user
+        LUNCH="$(echo "$IN_LUNCH" | xargs)"
+        if [[ -z "$LUNCH" ]]; then
+          echo "LUNCH_COMMAND is empty! Example: lunch lineage_RMX2020-bp4a-user"
+          exit 1
         fi
+        echo "Lunch command: $LUNCH"
 
           if [[ "${{ github.event.inputs.LOCAL_MANIFEST }}" =~ \.xml(/)?$ ]]; then
             local_manifest_url="${{ github.event.inputs.LOCAL_MANIFEST }}"
@@ -490,7 +481,7 @@ jobs:
       run: |
         git config --global user.name "${{ github.actor }}"
         git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-
+      
       # Download and configure 'crave'.
     - name: Configure the 'crave' environment
       run: |
@@ -640,10 +631,13 @@ jobs:
         TELEGRAM_TO: ${{ secrets.TELEGRAM_TO || env.TG_CHAT_ID }}
         ACTOR: ${{ github.actor }}
         DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
-        BUILD_TYPE: ${{ github.event.inputs.BUILD_TYPE }}
+        LUNCH_CMD: ${{ github.event.inputs.LUNCH_COMMAND }}
         BASE_PROJECT: ${{ needs.test.outputs.BASE_RESOLVED }}
       run: |
         NL=$'\n'
+        # Variant = last part of the lunch command (e.g. user / userdebug / eng)
+        VARIANT=$(echo "$LUNCH_CMD" | awk '{print $NF}')
+        VARIANT="${VARIANT##*-}"
         NOW=$(date +%s)
         START=${BUILD_START:-$NOW}
         DUR=$((NOW - START))
@@ -655,7 +649,7 @@ jobs:
         TEXT+="<b>Started:</b> ${STARTED}${NL}"
         TEXT+="<b>Duration:</b> <code>${DURATION}</code>${NL}"
         TEXT+="🔧 <b>Configuration:</b>${NL}"
-        TEXT+="  • Variant: <code>${BUILD_TYPE}</code>${NL}"
+        TEXT+="  • Variant: <code>${VARIANT}</code>${NL}"
         TEXT+="  • Base: <code>${BASE_PROJECT}</code>${NL}${NL}"
 
         if [ -n "${GOFILE_LINK}" ]; then
@@ -683,12 +677,15 @@ jobs:
         TELEGRAM_TO: ${{ secrets.TELEGRAM_TO || env.TG_CHAT_ID }}
         ACTOR: ${{ github.actor }}
         DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
-        BUILD_TYPE: ${{ github.event.inputs.BUILD_TYPE }}
+        LUNCH_CMD: ${{ github.event.inputs.LUNCH_COMMAND }}
         JOB_STATUS: ${{ job.status }}
         RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         cd $PROJECTFOLDER
         NL=$'\n'
+        # Variant = last part of the lunch command (e.g. user / userdebug / eng)
+        VARIANT=$(echo "$LUNCH_CMD" | awk '{print $NF}')
+        VARIANT="${VARIANT##*-}"
         NOW=$(date +%s)
         START=${BUILD_START:-$NOW}
         DUR=$((NOW - START))
@@ -708,7 +705,7 @@ jobs:
         TEXT+="<b>User:</b> <code>${ACTOR}</code>${NL}"
         TEXT+="<b>Started:</b> ${STARTED}${NL}"
         TEXT+="<b>Duration:</b> <code>${DURATION}</code>${NL}"
-        TEXT+="🔧 Variant: <code>${BUILD_TYPE}</code>${NL}"
+        TEXT+="🔧 Variant: <code>${VARIANT}</code>${NL}"
         TEXT+="<a href=\"${RUN_URL}\">Open Actions log</a>"
 
         if [ -s out/error.log ]; then
